@@ -123,6 +123,19 @@ class AnswerGenerator:
         self._cache: dict = {}
         # 语义缓存（P0-4）：(query 向量, 精确缓存 key, Top chunk id 集)
         self._semantic: list = []
+        self._redis = None
+
+    def _rclient(self):
+        """结果缓存后端：REDIS_URL 配置时用 Redis（多实例共享 TTL），否则进程内。"""
+        if self._redis is None and settings.redis_url:
+            try:
+                import redis as _redis
+
+                self._redis = _redis.Redis.from_url(settings.redis_url,
+                                                    decode_responses=True)
+            except Exception:  # noqa: BLE001
+                self._redis = False
+        return self._redis or None
 
     def _cache_key(self, query: str, ctx) -> str:
         ids = ",".join(str(m["chunk_id"]) for m in ctx.metas[:6])
@@ -171,6 +184,16 @@ class AnswerGenerator:
         )
 
     def _get_cache(self, key: str):
+        redis = self._rclient()
+        if redis is not None:
+            try:
+                raw = redis.get("ans:" + key)
+            except Exception:  # noqa: BLE001 — Redis 故障回退进程内
+                raw = None
+                self._redis = None
+            if raw:
+                data = __import__("json").loads(raw)
+                return AnswerResult(**data)
         item = self._cache.get(key)
         if not item:
             return None
@@ -182,16 +205,31 @@ class AnswerGenerator:
         return res
 
     def _put_cache(self, key: str, res: AnswerResult):
+        redis = self._rclient()
+        if redis is not None:
+            import json as _json
+
+            ttl = self.REFUSAL_TTL if res.refused else self.CACHE_TTL
+            try:
+                redis.setex("ans:" + key, ttl,
+                            _json.dumps(res.__dict__, ensure_ascii=False, default=str))
+            except Exception:  # noqa: BLE001 — Redis 故障回退进程内
+                self._redis = None
         if len(self._cache) > 2000:
             self._cache.clear()
         self._cache[key] = (time.time(), res)
 
     def _messages(self, query: str, ctx, profile_block: str = "") -> tuple:
-        """返回 (messages, prompt_version)。模板走 Prompt 版本服务（P1-5）。"""
+        """返回 (messages, prompt_version)。模板走 Prompt 版本服务（P1-5）。
+
+        ① 结构式隔离：资料区一律由系统包裹 <context> 标签（内容本身已过
+        sanitize_context_tags，不可信内容中的伪造标签被转义/剔块）。
+        """
         from ..ops.prompts import prompt_service
 
         version, template = prompt_service.get("qa", QA_SYSTEM)
-        system = template.format(context=ctx.blocks or "（无资料）",
+        context_block = "<context>\n" + (ctx.blocks or "（无资料）") + "\n</context>"
+        system = template.format(context=context_block,
                                  profile=profile_block or "（无）")
         messages = [
             {"role": "system", "content": system},

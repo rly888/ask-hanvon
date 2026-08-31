@@ -10,7 +10,8 @@ from askhanvon.evals.runner import render_report, run_all_gates, run_suite  # no
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="问小汉 · 评测门禁")
-    parser.add_argument("--suite", default="all", choices=["rag", "agent", "rec", "all"])
+    parser.add_argument("--suite", default="all",
+                        choices=["rag", "agent", "rec", "security", "all"])
     parser.add_argument("--limit", type=int, default=None, help="RAG 评测题数（调试用）")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()

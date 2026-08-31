@@ -19,25 +19,37 @@ def tokenize(text: str) -> list:
     return [w for w in jieba.lcut(_WS.sub(" ", text)) if w.strip()]
 
 
+def fts_query_parts(text: str, max_terms: int = 24) -> tuple:
+    """返回 (lexemes, phrases)：去重内容词元 + 相邻二元组短语（单一事实源）。
+
+    供 FTS5（SQLite）与 tsquery（PostgreSQL）两种后端各自构造查询表达式，
+    保证双语检索行为一致。
+    """
+    lexemes: list = []
+    for t in tokenize(text):
+        if len(t) == 1 and not t.isascii():
+            continue  # 单字中文多为虚词
+        t = t.replace('"', "")
+        if t and t not in lexemes:
+            lexemes.append(t)
+        if len(lexemes) >= max_terms:
+            break
+    phrases = []
+    for i in range(min(len(lexemes) - 1, 12)):
+        phrases.append([lexemes[i], lexemes[i + 1]])
+    return lexemes, phrases
+
+
 def fts_match_query(text: str, max_terms: int = 24) -> str:
     """构造 FTS5 MATCH 表达式：词元 OR + 相邻词元短语通道。
 
     - 过滤单字 CJK 词元（"在/什么"等），避免通用虚词稀释 BM25 排序；
     - 短语通道（"长坂 坡桥"式二元组短语）提升词序敏感问题（书名/事件名）的精度。
     """
-    terms = []
-    for t in tokenize(text):
-        if len(t) == 1 and not t.isascii():
-            continue  # 单字中文多为虚词
-        t = t.replace('"', "")
-        if t and t not in terms:
-            terms.append(t)
-        if len(terms) >= max_terms:
-            break
-    parts = ['"' + t + '"' for t in terms]
-    # 短语通道：内容词元的相邻二元组（P0-3 优化项）
-    for i in range(min(len(terms) - 1, 12)):
-        parts.append('"' + terms[i] + " " + terms[i + 1] + '"')
+    lexemes, phrases = fts_query_parts(text, max_terms)
+    parts = ['"' + t + '"' for t in lexemes]
+    for ph in phrases:
+        parts.append('"' + " ".join(ph) + '"')
     return " OR ".join(parts)
 
 

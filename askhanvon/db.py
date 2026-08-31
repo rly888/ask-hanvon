@@ -1,12 +1,15 @@
-"""SQLite 存储层（领域仓储模式）。
+"""SQLite 存储层（领域仓储模式，SQLite / PostgreSQL 双后端）。
 
 单体多模块：按域前缀分表（books_/users_/orders_/ops_/mh_/eval_/audit_），
 对应《开发计划》§3.5 目标服务拓扑的数据所有权边界，为后续按域拆库留缝。
 
-安全约定：每个数据访问方法的 SQL 都是方法体内联的完整字面量，不经过任何
-变量透传/拼接/插值；用户可控数据（含 LIKE 过滤）一律经 ? 占位符绑定；
-LIKE 过滤在 Python 侧完成。读方法仅执行 SELECT/WITH 字面量。
+安全约定：所有 SQL 均为方法体内的完整字面量，无任何字符串拼接/插值/连接符
+进入 SQL 文本；用户可控数据一律通过 ? 占位符绑定；只读方法仅接受
+SELECT/WITH。LIKE 过滤在 Python 侧完成（图书量级小，全量取回内存过滤）。
+PostgreSQL 模式（DB_ENGINE=postgres + PG_DSN）：占位符经 pgcompat 适配，
+FTS5 由 tsvector 方案替代（中文分词先 jieba 预处理，检索行为一致）。
 """
+import hashlib
 import json
 import os
 import re
@@ -18,6 +21,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from .config import settings
+from .pg_repository import PG_DOMAIN_METHODS
 
 _SELECT_RE = re.compile(r"^\s*(SELECT|WITH)\b", re.IGNORECASE)
 
@@ -1093,11 +1097,36 @@ _db: Database | None = None
 _db_lock = threading.Lock()
 
 
-def get_db() -> Database:
+class HybridStore:
+    """按域路由的存储门面（方案 A 多引擎分工）：
+
+    - PostgreSQL 后端开启时（DB_ENGINE=postgres）：业务域方法委托给 PgRepository，
+      检索域方法（图书/章节/知识块/FTS）留在 SQLite 检索库；
+    - SQLite 后端（默认）：全部委托给本进程 SQLite 仓储（原单体行为不变）。
+    """
+
+    def __init__(self, sqlite_db: Database, pg_repo=None):
+        self._sqlite = sqlite_db
+        self._pg = pg_repo
+
+    def __getattr__(self, name: str):
+        if self._pg is not None and name in PG_DOMAIN_METHODS:
+            return getattr(self._pg, name)
+        return getattr(self._sqlite, name)
+
+
+def get_db():
+    """返回领域存储门面。调用方无感：DB_ENGINE 切换只改环境变量。"""
     global _db
     if _db is None:
         with _db_lock:
             if _db is None:
-                _db = Database(settings.db_path)
-                _db.init_schema()
+                sqlite_store = Database(settings.db_path)
+                sqlite_store.init_schema()
+                store = HybridStore(sqlite_store)
+                if settings.db_engine == "postgres":
+                    from . import pg_repository
+
+                    store._pg = pg_repository.get_pg()
+                _db = store
     return _db

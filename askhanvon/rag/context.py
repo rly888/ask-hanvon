@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from ..config import settings
 from ..ops.strategies import strategies
+from ..security.injection import sanitize_context_tags
 
 
 @dataclass
@@ -84,6 +85,11 @@ def build_context(query: str, retrieved: list, budget: int | None = None,
         )
         # P1-1：prompt 块用扩展文本；meta["text"] 保留原子块（引用交叉验证基准）
         body = _expand_chunk(r, safe_ids - {r["chunk_id"]})
+        # ① 结构式隔离：不可信内容中的类 <context> 标签转义；伪造标签的块直接剔除
+        body, tag_found = sanitize_context_tags(body)
+        if tag_found:
+            dropped_untrusted += 1
+            continue
         block = head + "\n" + body
         if used + len(block) > budget and lines:
             break

@@ -1,0 +1,80 @@
+# 问小汉 · 生产/面试演示 Compose（方案 A：PG + Redis 真实技术栈）
+# 镜像已拉取：postgres:16-alpine / redis:7-alpine（国内镜像源拉到后 tag 为标准名）
+# 国内镜像源（未拉过的机器用其一）：
+#   docker.1ms.run 、 docker.m.daocloud.io 、 docker.1panel.live
+# 启动：docker compose -f docker-compose.prod.yml up -d
+# 首次：docker compose -f docker-compose.prod.yml exec app python run.py --seed-only
+# （注意：PG_DSN 中的口令自行设定，勿用示例值——本文件只存环境占位）
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: askhanvon-pg
+    environment:
+      POSTGRES_USER: askhanvon
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?请设置 PG_PASSWORD 环境变量}
+      POSTGRES_DB: askhanvon
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U askhanvon -d askhanvon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: askhanvon-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: askhanvon-app
+    ports:
+      - "8300:8300"
+    environment:
+      DB_ENGINE: postgres
+      PG_DSN: postgresql://askhanvon:${PG_PASSWORD:?}@postgres:5432/askhanvon
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data          # SQLite 检索索引库持久化
+      # ===== 凭据只经环境变量注入 =====
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_WEAK_MODEL: ${LLM_WEAK_MODEL:-glm-4-flash}
+      LLM_STRONG_MODEL: ${LLM_STRONG_MODEL:-glm-4.5-flash}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_MODEL: ${EMBED_MODEL:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+      JUDGE_MODEL: ${JUDGE_MODEL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-0}
+      LOG_LEVEL: INFO
+    volumes:
+      - appdata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  appdata:

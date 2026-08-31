@@ -118,6 +118,16 @@ docs/                     架构 / 工具schema / 事件模型 / 评测门禁 / 
 scripts/                  seed 数据 · 评测 CLI · POC 脚本
 ```
 
+## 生产模式（方案 A：PG + Redis 真实技术栈）✅ 已落地
+
+- **多引擎分工**：PostgreSQL = 业务事务库（用户/订单/运营/评测/审计/埋点/特征）；
+  SQLite(FTS5) = 检索索引库（中文分词友好）；Redis = 限流 + LLM 结果缓存（多实例外置）。
+  调用方零改动：`get_db()` 按域路由（`DB_ENGINE=postgres` 切换环境变量即可）。
+- 启动：`docker compose -f docker-compose.prod.yml up -d`（国内镜像源已注明，
+  本机镜像 `postgres:16-alpine`/`redis:7-alpine` 已就绪）→ `exec app python run.py --seed-only`。
+- 验收：`python scripts/smoke_pg.py`（16 项全 PASS）· `scripts/locust_scenarios.py` 压测。
+- 详见 [生产部署文档](docs/production-deploy.md)。
+
 ## 常用运维操作
 
 ```bash

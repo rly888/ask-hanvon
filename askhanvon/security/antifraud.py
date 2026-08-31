@@ -3,6 +3,7 @@ import threading
 import time
 from collections import deque
 
+from ..config import settings
 from ..db import get_db
 from ..obs.logging import get_logger, log_fields
 
@@ -10,14 +11,48 @@ logger = get_logger("askhanvon.security")
 
 
 class SlidingWindowLimiter:
-    """进程内滑动窗口限流器（Redis TokenBucket 的单体等价实现）。"""
+    """滑动窗口限流器。
+
+    双实现（方案 A）：
+    - REDIS_URL 配置时用 Redis SortedSet（多实例共享、原子）；
+    - 否则进程内 deque（单体默认，接口一致）。
+    """
 
     def __init__(self):
         self._hits: dict = {}
         self._lock = threading.Lock()
+        self._redis = None
+
+    def _client(self):
+        if self._redis is None and settings.redis_url:
+            import redis as _redis
+
+            self._redis = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        return self._redis
 
     def allow(self, key: str, limit: int, window_s: float = 60.0) -> tuple:
         now = time.time()
+        redis = self._client()
+        if redis is not None:
+            rkey = "rate:" + str(key)
+            try:
+                pipe = redis.pipeline()
+                pipe.zremrangebyscore(rkey, 0, now - window_s)
+                pipe.zadd(rkey, {str(now): now})
+                pipe.zcard(rkey)
+                pipe.expire(rkey, int(window_s) + 10)
+                results = pipe.execute()
+                count = int(results[2])
+                if count > limit:
+                    pipe2 = redis.pipeline()
+                    pipe2.zremrangebyscore(rkey, 0, now - window_s)
+                    pipe2.zrange(rkey, 0, 0, withscores=True)
+                    oldest = pipe2.execute()[1]
+                    retry = int(oldest[0][1] + window_s - now) + 1 if oldest else 1
+                    return False, retry
+                return True, 0
+            except Exception:  # noqa: BLE001 — Redis 故障回退进程内（可用性优先）
+                self._redis = None
         with self._lock:
             q = self._hits.setdefault(key, deque())
             while q and q[0] < now - window_s:

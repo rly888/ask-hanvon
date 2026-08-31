@@ -8,10 +8,12 @@ from ..obs.logging import get_logger, log_fields
 from .agent_eval import run_agent_eval
 from .rag_eval import run_rag_eval
 from .rec_eval import run_rec_eval
+from .security_eval import run_security_eval
 
 logger = get_logger("askhanvon.evals")
 
-SUITES = {"rag": run_rag_eval, "agent": run_agent_eval, "rec": run_rec_eval}
+SUITES = {"rag": run_rag_eval, "agent": run_agent_eval, "rec": run_rec_eval,
+          "security": run_security_eval}
 
 
 def _gates_for(suite: str, m: dict) -> dict:
@@ -45,6 +47,17 @@ def _gates_for(suite: str, m: dict) -> dict:
             "ndcg_at_k>0": [0.0, m.get("ndcg_at_k", 0.0), m.get("ndcg_at_k", 0.0) > 0.0],
             "coverage>0": [0.0, m.get("coverage", 0.0), m.get("coverage", 0.0) > 0.0],
         }
+    if suite == "security":
+        gates = {
+            "strong_recall>=": [0.95, m.get("strong_recall", 0.0),
+                                m.get("strong_recall", 0.0) >= 0.95],
+            "benign_fp_rate<=": [0.05, m.get("benign_fp_rate", 1.0),
+                                 m.get("benign_fp_rate", 1.0) <= 0.05],
+        }
+        if m.get("llm_recheck_enabled"):
+            gates["variant_recall>="] = [0.70, m.get("variant_recall", 0.0),
+                                         m.get("variant_recall", 0.0) >= 0.70]
+        return gates
     return {}
 
 
@@ -52,11 +65,10 @@ def run_suite(name: str, verbose: bool = False, limit: int | None = None) -> dic
     fn = SUITES.get(name)
     if not fn:
         raise ValueError("未知评测套件: " + name)
-    kwargs = {}
+    kwargs = {"verbose": verbose}
     if name == "rag":
-        kwargs = {"verbose": verbose, "limit": limit, "use_cache": False}
-    else:
-        kwargs = {"verbose": verbose}
+        kwargs["limit"] = limit
+        kwargs["use_cache"] = False
     report = fn(**kwargs)
     metrics = report["metrics"]
     gates = _gates_for(name, metrics)
@@ -64,10 +76,12 @@ def run_suite(name: str, verbose: bool = False, limit: int | None = None) -> dic
     report["gates"] = gates
     report["gate_passed"] = gate_passed
 
-    passed = sum(1 for g in gates.values() if g[2])
     db = get_db()
+    passed = sum(1 for g in gates.values() if g[2])
+    # security 套件用例复用 eval_cases（injection 名），不计入"题目数"统计
+    total_count = metrics.get("total", 0)
     db.eval_run_save(
-        suite=name, total=metrics.get("total", 0), passed=passed,
+        suite=name, total=total_count, passed=passed,
         metrics_json=dumps(metrics), gates_json=dumps(gates),
         gate_passed=1 if gate_passed else 0, details_json=dumps(report.get("details", {})),
     )
@@ -79,7 +93,7 @@ def run_suite(name: str, verbose: bool = False, limit: int | None = None) -> dic
 def run_all_gates(verbose: bool = False) -> dict:
     results = {}
     all_pass = True
-    for name in ("rag", "agent", "rec"):
+    for name in ("rag", "agent", "rec", "security"):
         try:
             r = run_suite(name, verbose=verbose)
             results[name] = r

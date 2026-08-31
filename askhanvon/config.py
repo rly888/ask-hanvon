@@ -64,6 +64,11 @@ class Settings:
     # ---- 内置任务调度（P3-5，默认关）----
     scheduler_enabled: bool = os.environ.get("SCHEDULER_ENABLED", "") == "1"
 
+    # ---- 生产后端（方案 A）：DB_ENGINE=postgres 切换 PostgreSQL；REDIS_URL 外置限流/缓存 ----
+    db_engine: str = (os.environ.get("DB_ENGINE", "sqlite") or "sqlite").lower()
+    pg_dsn: str = os.environ.get("PG_DSN", "")
+    redis_url: str = os.environ.get("REDIS_URL", "")
+
     # ---- LLM 模型网关 ----
     llm_base_url: str = os.environ.get("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
     llm_strong_model: str = os.environ.get("LLM_STRONG_MODEL", "glm-4.5-flash")
