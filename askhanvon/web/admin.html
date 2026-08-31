@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>问小汉 · 运营管理后台</title>
+<link rel="stylesheet" href="/web/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">问小汉 <small>运营管理后台</small></div>
+  <div class="spacer"></div>
+  <a href="/web/index.html">← 返回问答</a>
+  <span id="who" style="color:var(--muted)"></span>
+</header>
+
+<div class="admin-wrap">
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="showTab('overview')">总览</div>
+    <div class="tab" data-tab="strategies" onclick="showTab('strategies')">策略配置</div>
+    <div class="tab" data-tab="ab" onclick="showTab('ab')">A/B 实验</div>
+    <div class="tab" data-tab="campaigns" onclick="showTab('campaigns')">Campaign / 优先图书</div>
+    <div class="tab" data-tab="evals" onclick="showTab('evals')">评测门禁</div>
+    <div class="tab" data-tab="audit" onclick="showTab('audit')">审计 / 安全</div>
+    <div class="tab" data-tab="model" onclick="showTab('model')">模型调用</div>
+    <div class="tab" data-tab="content" onclick="showTab('content')">内容 / 离线任务</div>
+  </div>
+
+  <!-- 总览 -->
+  <div class="panel show" id="panel-overview">
+    <div class="kpi-grid" id="kpiGrid"></div>
+    <div class="card"><h3>最近评测</h3><div id="overviewEvals"></div></div>
+  </div>
+
+  <!-- 策略 -->
+  <div class="panel" id="panel-strategies">
+    <div class="card">
+      <h3>策略中心（改完即时生效）</h3>
+      <table id="strategyTable"></table>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>修改策略</h3>
+      <div class="form-row"><label>Key（如 retrieval.weights）</label><input id="stKey" /></div>
+      <div class="form-row"><label>Value（JSON）</label><input id="stValue" /></div>
+      <button onclick="saveStrategy()">保存</button>
+    </div>
+  </div>
+
+  <!-- A/B -->
+  <div class="panel" id="panel-ab">
+    <div class="card">
+      <h3>创建实验</h3>
+      <div class="form-row"><label>名称</label><input id="expName" value="rec_rank_v1" /></div>
+      <div class="form-row"><label>描述</label><input id="expDesc" value="A=规则权重 B=离线训练权重" /></div>
+      <div class="form-row"><label>变体 JSON</label><input id="expVariants"
+        value='[{"key":"A","weight":50,"params":{"rec.use_trained":false}},{"key":"B","weight":50,"params":{"rec.use_trained":true}}]' /></div>
+      <button onclick="createExp()">创建</button>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>实验列表与指标</h3><div id="expList"></div></div>
+  </div>
+
+  <!-- Campaign -->
+  <div class="panel" id="panel-campaigns">
+    <div class="card">
+      <h3>创建 Campaign</h3>
+      <div class="form-row"><label>名称</label><input id="cpName" /></div>
+      <div class="form-row"><label>书 ID 列表（JSON 数组）</label><input id="cpBooks" placeholder='["b_xxx","b_yyy"]' /></div>
+      <button onclick="createCampaign()">创建</button>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>优先图书（首页保位）</h3>
+      <div class="form-row"><label>Book ID</label><input id="prBook" /></div>
+      <div class="form-row"><label>理由</label><input id="prReason" value="编辑推荐" /></div>
+      <button onclick="setPriority()">设置</button>
+      <div id="priorityList" style="margin-top:10px"></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Campaign 列表</h3><div id="cpList"></div></div>
+  </div>
+
+  <!-- 评测 -->
+  <div class="panel" id="panel-evals">
+    <div class="card">
+      <h3>评测门禁（不达标不上线）</h3>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <button onclick="runEval('rag')">跑 RAG 回归</button>
+        <button onclick="runEval('agent')">跑 Agent 评测</button>
+        <button onclick="runEval('rec')">跑推荐评测</button>
+        <button onclick="runEval('all')">跑全部门禁</button>
+      </div>
+      <pre class="report" id="evalReport">点击按钮执行回归评测…</pre>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>历史运行</h3><table id="evalRuns"></table></div>
+  </div>
+
+  <!-- 审计 -->
+  <div class="panel" id="panel-audit">
+    <div class="card"><h3>工具调用审计</h3><table id="auditTable"></table></div>
+    <div class="card" style="margin-top:14px"><h3>注入攻击拦截</h3><table id="injTable"></table></div>
+  </div>
+
+  <!-- 模型调用 -->
+  <div class="panel" id="panel-model">
+    <div class="card"><h3>按模型聚合（近 24h）</h3><table id="mhTable"></table></div>
+    <div class="card" style="margin-top:14px"><h3>最近调用明细</h3><table id="mhRecent"></table></div>
+  </div>
+
+  <!-- 内容 / 离线 -->
+  <div class="panel" id="panel-content">
+    <div class="card">
+      <h3>内容管理</h3>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="file" id="uploadFile" accept=".md,.txt,.epub,.pdf" />
+        <button onclick="uploadBook()">上传并解析入库</button>
+        <button class="ghost" onclick="reindex()">从 data/books 重建索引</button>
+      </div>
+      <div id="contentAlert"></div>
+      <table id="adminBooks" style="margin-top:12px"></table>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>离线链路任务</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button onclick="offlineTask('offline/features')">重算特征</button>
+        <button onclick="offlineTask('offline/train')">训练精排+CF</button>
+        <button onclick="offlineTask('offline/candidates')">预计算候选集</button>
+      </div>
+      <pre class="report" id="offlineReport" style="margin-top:10px"></pre>
+    </div>
+  </div>
+</div>
+<script src="/web/admin.js"></script>
+</body>
+</html>

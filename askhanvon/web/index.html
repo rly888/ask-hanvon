@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>问小汉 · 智能阅读与图书推荐</title>
+<link rel="stylesheet" href="/web/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">问小汉 <small>智能阅读与图书推荐</small></div>
+  <div class="search">
+    <input id="globalSearch" placeholder="搜索书名 / 作者 / 关键词，回车搜索" />
+    <button onclick="doSearch()">搜索</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="userbox" id="userbox">
+    <a href="/web/admin.html" id="adminLink" style="display:none">管理后台</a>
+    <button class="ghost" id="loginBtn" onclick="showLogin()">登录 / 注册</button>
+    <span id="userBadge" style="display:none"></span>
+    <button class="ghost small" id="logoutBtn" style="display:none" onclick="logout()">退出</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- 左：对话 -->
+  <div class="card">
+    <h3>💬 问问小汉 <span style="font-size:12px;color:var(--muted)" id="modeBadge"></span></h3>
+    <div class="sessions" id="sessions"></div>
+    <div class="chat-box" id="chatBox"></div>
+    <div class="chat-input">
+      <textarea id="chatInput" placeholder="试试：「《西游记》讲了什么」 / 「推荐几本历史书」 / 「我想买《宇宙探索简史》」" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg();}"></textarea>
+      <button onclick="sendMsg()" id="sendBtn">发送</button>
+    </div>
+  </div>
+
+  <!-- 右：推荐书架 -->
+  <div class="card">
+    <h3>📚 猜你喜欢 <span style="font-size:11px;color:var(--muted)">（结果可解释 · 规则命中可追踪）</span></h3>
+    <div class="shelf" id="shelf"></div>
+  </div>
+</div>
+
+<!-- 登录/注册 -->
+<div class="modal-mask" id="loginModal">
+  <div class="modal" style="width:360px">
+    <h2>登录 / 注册</h2>
+    <div id="loginAlert"></div>
+    <div class="form-row"><label>用户名</label><input id="loginUsername" /></div>
+    <div class="form-row"><label>密码</label><input id="loginPassword" type="password" /></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button style="flex:1" onclick="login()">登录</button>
+      <button class="ghost" style="flex:1" onclick="registerMe()">注册新账号</button>
+    </div>
+    <p style="color:var(--muted);font-size:12px;margin-top:10px">
+      演示账号由 seed 脚本创建；购买/收藏等工具需要登录后使用。
+    </p>
+  </div>
+</div>
+
+<!-- 图书详情 -->
+<div class="modal-mask" id="bookModal">
+  <div class="modal">
+    <h2 id="bookTitle"></h2>
+    <div id="bookInfo" style="color:var(--muted);font-size:13px"></div>
+    <div id="bookActions" style="margin:12px 0;display:flex;gap:10px">
+      <button class="ghost" onclick="collectBook()">加入书架</button>
+      <button onclick="buyBook()">购买</button>
+    </div>
+    <h3 style="font-size:14px;margin-top:8px">目录</h3>
+    <div class="chapter-list" id="chapterList"></div>
+  </div>
+</div>
+
+<!-- 阅读器 -->
+<div class="modal-mask" id="readerModal">
+  <div class="modal">
+    <h2 id="readerTitle"></h2>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:8px" id="readerMeta"></div>
+    <div class="reader" id="readerBody"></div>
+  </div>
+</div>
+
+<!-- 购买确认（二次确认） -->
+<div class="modal-mask" id="payModal">
+  <div class="modal" style="width:400px">
+    <h2>🧾 确认订单</h2>
+    <div id="payInfo"></div>
+    <div class="form-row">
+      <label>输入确认令牌完成支付</label>
+      <input id="payToken" placeholder="订单确认令牌" />
+    </div>
+    <div style="display:flex;gap:10px">
+      <button style="flex:1" onclick="confirmPay()">确认支付</button>
+      <button class="ghost" onclick="closeModal('payModal')">取消</button>
+    </div>
+    <p style="color:var(--muted);font-size:12px;margin-top:10px">
+      高危操作：订单 2 分钟内有效，令牌仅限本人使用。
+    </p>
+  </div>
+</div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>

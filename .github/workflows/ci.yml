@@ -1,0 +1,39 @@
+# 问小汉 · CI（优化项 P0-5：变更自动回归，门禁失败阻断合并）
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: ${{ runner.temp }}/askhanvon-ci
+      LOG_LEVEL: ERROR
+      # CI 中不注入任何 LLM Key：评测走离线兜底模式，确定性且零成本
+      ZHIPU_API_KEY: ""
+      LLM_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 语法门禁（compileall）
+        run: python -m compileall -q askhanvon scripts run.py
+
+      - name: 单元与集成测试
+        run: python -m pytest tests/ -q
+
+      - name: 评测门禁（离线模式，不达标不上线）
+        run: |
+          python -m scripts.run_eval --suite rag
+          python -m scripts.run_eval --suite agent
+          python -m scripts.run_eval --suite rec

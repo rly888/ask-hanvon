@@ -1,0 +1,39 @@
+# 问小汉 · 本地/演示编排（生产化见 P4-3/4 多实例清单）
+services:
+  app:
+    build: .
+    ports:
+      - "8300:8300"
+    environment:
+      # ===== 只从环境变量注入凭据，禁止写入源码/镜像 =====
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_WEAK_MODEL=${LLM_WEAK_MODEL:-glm-4-flash}
+      - LLM_STRONG_MODEL=${LLM_STRONG_MODEL:-glm-4.5-flash}
+      - EMBED_BASE_URL=${EMBED_BASE_URL:-}
+      - EMBED_MODEL=${EMBED_MODEL:-}
+      - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - JUDGE_MODEL=${JUDGE_MODEL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-0}
+      - LOG_LEVEL=INFO
+    volumes:
+      - app-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # 生产多实例时启用（需先完成进程内状态外置，见 docs/optimization-roadmap.md P4-3）：
+  # redis:
+  #   image: redis:7-alpine
+  #   command: ["redis-server", "--appendonly", "yes"]
+  #   volumes:
+  #     - redis-data:/data
+
+volumes:
+  app-data:
+  redis-data:
