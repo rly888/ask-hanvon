@@ -98,8 +98,9 @@ def main() -> int:
 
     strategies.set("smoke.probe", {"a": 1}, by="smoke")
     check("策略写入", strategies.get("smoke.probe") == {"a": 1})
-    ab_service.create("pg_smoke_exp", "smoke", [{"key": "A", "weight": 100, "params": {}}])
-    check("A-B 写入", ab_service.assign("pg_smoke_exp", uid)["variant"] == "A")
+    exp_name = "pg_smoke_exp_" + secrets.token_hex(3)
+    ab_service.create(exp_name, "smoke", [{"key": "A", "weight": 100, "params": {}}])
+    check("A-B 写入", ab_service.assign(exp_name, uid)["variant"] == "A")
     from askhanvon.generation.prompts import QA_SYSTEM
 
     ver = prompt_service.set("qa", QA_SYSTEM, by="smoke")

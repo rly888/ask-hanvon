@@ -19,6 +19,22 @@ def tokenize(text: str) -> list:
     return [w for w in jieba.lcut(_WS.sub(" ", text)) if w.strip()]
 
 
+def tsquery_text(match_expr: str | None) -> str:
+    """把 FTS5 风格 MATCH 表达式（'"a" OR "b" OR "a b"）转成 to_tsquery 参数文本。
+
+    仅作为 PostgreSQL to_tsquery('simple', ?) 的**参数值**，不进入 SQL 文本；
+    短语项用 <-> 相邻操作符表达（与 SQLite 短语通道语义对齐）。
+    """
+    parts = re.findall(r'"([^"]+)"', match_expr or "")
+    items = []
+    for p in parts:
+        toks = [t.replace("'", "") for t in p.split() if t]
+        if not toks:
+            continue
+        items.append(" <-> ".join(toks) if len(toks) > 1 else toks[0])
+    return " | ".join(items)
+
+
 def fts_query_parts(text: str, max_terms: int = 24) -> tuple:
     """返回 (lexemes, phrases)：去重内容词元 + 相邻二元组短语（单一事实源）。
 

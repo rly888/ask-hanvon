@@ -6,17 +6,21 @@
 
 ## 架构定位（面试讲法）
 
-多引擎分工，而非"用 PG 替换 SQLite"：
+**PG 模式下全链路单库生产形态**（不再有"检索核心在 SQLite"）：
 
-| 存储 | 角色 | 数据域 | 理由 |
-|---|---|---|---|
-| **PostgreSQL** | 业务事务库 | 用户/会话/订单/运营/埋点/特征/模型治理/评测/审计/kv | 事务、多实例一致性、备份恢复 |
-| **SQLite（FTS5）** | 检索索引库 | 图书/章节/知识块全文索引 | 中文分词友好（jieba 预分词）、零运维——业界"关系库 + 检索引擎(ES)"双层组合的轻量版 |
-| **Redis** | 状态外置 | 限流（SortedSet 滑动窗口）、LLM 结果缓存（TTL） | 多实例共享；故障自动回退进程内（可用性优先） |
+| 存储 | 角色（PG 模式） | 说明 |
+|---|---|---|
+| **PostgreSQL** | 全部数据域：业务 + 图书/章节/知识块（**全文检索用 tsvector 生成列 + GIN**；向量存 BYTEA 由应用层内存矩阵余弦） | 单库闭环，多实例一致性；`python scripts/smoke_pg.py` 16 项全部经过 PG |
+| SQLite | 仅 demo 模式（DB_ENGINE 默认）的存储 | 单体演示形态 |
+| **Redis** | 限流（SortedSet 滑窗）+ LLM 结果缓存 | 故障自动降级 **DB 原子计数兜底**（rate_counter 表，多 worker 仍严格共享总限） |
 
-**调用方零改动**：`get_db()` 返回 `HybridStore` 门面，按 `PG_DOMAIN_METHODS` 白名单路由
-业务域方法到 PgRepository，其余委托 SQLite 检索库——`DB_ENGINE` 切换只改环境变量。
-连接串/凭据全部环境变量注入，源码与镜像零凭据。
+**读取路径**：`get_db()` → `HybridStore` 门面按 `PG_DOMAIN_METHODS`（业务域 + **检索域**）路由到 `PgRepository`；
+`DB_ENGINE=postgres` 切换只改环境变量，调用方零改动。
+
+**向量检索的数据量路径**：
+- 当前（<100 万 chunk）：应用层内存矩阵余弦（chunk 级 256 维 ≈ 1GB/百万），零额外组件；
+- 下一步：pgvector（vector 列 + HNSW 索引，SQL 余弦——列结构已预留 BYTEA 可平滑迁移）；
+- 更大规模：Milvus / ES kNN —— 均已对应到 `rag/retriever.VectorSearch` 接口位（单点替换）。
 
 ## 快速开始
 

@@ -48,6 +48,7 @@ DEFAULTS = {
     "security.injection_threshold": 0.7,
     "security.injection_confirm_threshold": 0.3,  # 灰区起点：命中即送 LLM 二判（②）
     "security.injection_llm_recheck": True,        # 二判开关（无 Key 自动跳过）
+    "security.injection_fail_closed": True,        # 语义层不可用时保守拦截（② 加固）
     "security.youth_mode": False,
     "security.ip_blacklist": [],
     # ---- 配额 ----

@@ -89,7 +89,8 @@ _RECHECK_SYSTEM = (
 
 
 def llm_recheck(text: str) -> dict:
-    """弱模型二判（灰区）。无 LLM Key 或调用失败时按"不拦截"处理（保持现状行为）。"""
+    """弱模型二判（灰区/弱信号）。调用失败时返回 suspicious=False + 源标记，
+    由上层按 fail-closed 策略决定（默认语义层不可用 → 保守拦截，不放行攻击）。"""
     from ..modelhub.gateway import get_gateway
 
     gw = get_gateway()
@@ -112,7 +113,7 @@ def llm_recheck(text: str) -> dict:
             return {"suspicious": False, "source": "parse-error"}
         data = json.loads(out[s : e + 1])
         return {"suspicious": bool(data.get("suspicious")), "source": "llm"}
-    except Exception as e:  # noqa: BLE001 — 二判失败按不拦截（可用性优先）
+    except Exception as e:  # noqa: BLE001 — 二判调用异常：交给上层 fail-closed 判定
         log_fields(logger, 30, "injection.recheck_error", error=str(e)[:100])
         return {"suspicious": False, "source": "error"}
 
@@ -134,6 +135,13 @@ def check_user_message(text: str, user_id=None, threshold: float = 0.7) -> dict:
         recheck = llm_recheck(text)
         if recheck.get("suspicious"):
             result["score"] = max(result["score"], threshold)  # 语义确认 → 达拦截线
+        elif recheck.get("source") in ("no-llm", "parse-error", "error"):
+            # fail-closed：语义层不可用时，弱信号/灰区消息保守拦截（宁误伤不放行），
+            # 避免"没配 LLM 或 LLM 挂了 → 变体攻击静默放行"的失效模式
+            if strategies.get("security.injection_fail_closed", True):
+                result["score"] = max(result["score"], threshold) if (
+                    weak or confirm_th <= score < threshold) else result["score"]
+                result["fail_closed"] = True
     blocked = result["score"] >= threshold
     if result["hits"] or recheck or weak:
         get_db().injection_hit(
@@ -151,7 +159,8 @@ def check_user_message(text: str, user_id=None, threshold: float = 0.7) -> dict:
             source="user_message", score=round(result["score"], 3), blocked=blocked,
             weak=weak, recheck=recheck,
         )
-    return {"blocked": blocked, **result, "recheck": recheck, "weak_hits": weak}
+    return {"blocked": blocked, **result, "recheck": recheck, "weak_hits": weak,
+            "fail_closed": result.get("fail_closed", False)}
 
 
 def check_retrieved(text: str) -> dict:

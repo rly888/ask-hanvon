@@ -62,8 +62,14 @@ class HybridRetriever:
         if not expr:
             return []
         rows = get_db().fts_search(expr, top_k)
-        # SQLite bm25() 越负越相关 → 取负得「越大越好」
-        out = [(r["chunk_id"], -float(r["score"])) for r in rows if r["score"] < 0]
+        if not rows:
+            return []
+        if rows[0]["score"] >= 0:
+            # PostgreSQL ts_rank：正值越大越相关
+            out = [(r["chunk_id"], float(r["score"])) for r in rows]
+        else:
+            # SQLite bm25()：负值越小（数值越大）越相关 → 取负成"越大越好"
+            out = [(r["chunk_id"], -float(r["score"])) for r in rows if r["score"] < 0]
         out.sort(key=lambda x: x[1], reverse=True)
         return out
 

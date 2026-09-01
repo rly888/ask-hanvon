@@ -47,8 +47,7 @@ def test_flush_once_marks_done(sample_book):
     assert n2 == 0
 
 
-# ---------------- P0-6 认证强化 ----------------
-def test_password_policy_rejects_weak():
+# ---------------- P0-6 认证强化 ----------------def test_password_policy_rejects_weak():
     from fastapi.testclient import TestClient
 
     from askhanvon.server.app import app
@@ -106,6 +105,22 @@ def test_refresh_rotation_and_logout():
 
 
 # ---------------- P0-3 短语匹配 + RRF ----------------
+def test_db_fallback_rate_limit_shared_across_instances():
+    """问题 3 修复：Redis 故障时 DB 原子计数兜底，多 worker 共享同一总限。"""
+    from askhanvon.security.antifraud import SlidingWindowLimiter
+
+    worker_a = SlidingWindowLimiter(db_fallback=True)   # 模拟 worker A
+    worker_b = SlidingWindowLimiter(db_fallback=True)   # 模拟 worker B
+    results = (
+        [worker_a.allow("shared_key", 3, 3600)[0] for _ in range(2)]
+        + [worker_b.allow("shared_key", 3, 3600)[0] for _ in range(2)]
+    )
+    assert results == [True, True, True, False], results
+    # DB 兜底有跨实例共享能力：第三个实例也看到已满
+    worker_c = SlidingWindowLimiter(db_fallback=True)
+    assert worker_c.allow("shared_key", 3, 3600)[0] is False
+
+
 def test_fts_query_contains_phrase_channel():
     from askhanvon.nlp import fts_match_query
 

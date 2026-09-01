@@ -117,6 +117,9 @@ CREATE TABLE IF NOT EXISTS auth_tokens(
   token_hash TEXT PRIMARY KEY, user_id INTEGER, kind TEXT,
   expires_at REAL, revoked INTEGER DEFAULT 0, created_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
+CREATE TABLE IF NOT EXISTS rate_counter(
+  key TEXT, window_id TEXT, n INTEGER DEFAULT 0,
+  PRIMARY KEY(key, window_id));
 CREATE TABLE IF NOT EXISTS orders(
   id TEXT PRIMARY KEY, user_id INTEGER, book_id TEXT, qty INTEGER DEFAULT 1,
   price REAL DEFAULT 0, status TEXT DEFAULT 'pending',
@@ -614,6 +617,28 @@ CREATE TABLE IF NOT EXISTS injection_hits(
             self._conn().execute(
                 "UPDATE auth_tokens SET revoked=1 WHERE user_id=? AND kind=?",
                 (user_id, kind),
+            )
+            self._conn().commit()
+
+    # ---------- 限流兜底（Redis 故障时的跨进程原子计数）----------
+    def rate_bump(self, key: str, window_id: str, limit: int) -> bool:
+        """原子自增窗口计数并返回是否未超限（多 worker 共享，SQLite 写锁保证原子）。"""
+        with self._write_lock:
+            rows = self._conn().execute(
+                "INSERT INTO rate_counter(key, window_id, n) VALUES(?,?,1)"
+                " ON CONFLICT(key, window_id) DO UPDATE SET n=rate_counter.n+1"
+                " RETURNING n",
+                (key, window_id),
+            ).fetchall()
+            self._conn().commit()
+        n = rows[0]["n"] if rows else 1
+        return int(n) <= limit
+
+    def rate_purge(self, older_window_id: str) -> None:
+        """清理过期窗口（限流兜底的房态维护，调用方低频触发）。"""
+        with self._write_lock:
+            self._conn().execute(
+                "DELETE FROM rate_counter WHERE window_id < ?", (older_window_id,)
             )
             self._conn().commit()
 
