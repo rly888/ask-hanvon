@@ -140,7 +140,8 @@ class HybridRetriever:
         """双路召回 → 策略化融合（rrf | linear）→ 过滤。
 
         RRF（Reciprocal Rank Fusion，P0-3）：score = Σ 1/(k+rank)，按通道内名次融合，
-        消除两路分数量纲差异；输出前做 minmax 归一以保持置信度语义。
+        消除两路分数量纲差异；score 仅用于排序，置信度判定在 context 层用绝对分
+        （rerank_score / vector_score），minmax 归一分不参与低置信门禁。
         """
         self._refresh_if_needed()
         k = top_k or settings.retrieval_top_k

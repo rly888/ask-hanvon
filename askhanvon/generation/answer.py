@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from ..config import settings
 from ..modelhub import quota as quota_mod
-from ..modelhub.gateway import LLMUnavailable, get_gateway
+from ..modelhub.gateway import LLMUnavailable, ProviderError, get_gateway
 from ..nlp import get_local_embedder, tokenize
 from ..obs.logging import get_logger, log_fields
 from ..obs.metrics import metrics
@@ -58,6 +58,16 @@ _GENERIC_TOKENS = {
     "时间", "内容", "什么", "怎么", "为什么", "如何", "讲", "了", "是", "的", "和",
     "在", "吗", "呢", "请", "帮", "我", "介绍", "说说", "几颗", "多少", "几天",
     "怎么样", "哪些", "哪个", "谁",
+    # 主题泛词：不充当"实体锚词"，避免"师父/出世/内容"这类词在回答中偶现就误判为命中
+    # （否则"郭靖的师父"会被"悟空师父"这种跑题回答错误放行）。锚词只留给真正的实体/主题。
+    "师父", "徒弟", "主角", "人物", "角色", "剧情", "情节", "故事", "讲述", "简介",
+    "是什么", "说的是", "哪一年", "为何", "原因", "结果", "过程", "情况", "背景",
+    "在哪里", "是在哪里", "出世", "诞生", "出生", "来历", "生平", "经历",
+    # 高频通用词：在书库里极易出现，若当作锚词会导致"平凡的世界→答世界""论语→答思想"
+    # 这类跑题。锚词只保留独特实体（孙悟空/关羽/秦始皇…）。
+    "世界", "唐朝", "古代", "历史", "思想", "核心", "名字", "由来", "魔法", "人生",
+    "影响", "意义", "特点", "作用", "命运", "传说", "文明", "时代", "社会", "国家",
+    "知识", "原理", "方法",
 }
 
 
@@ -80,35 +90,68 @@ def _topic_coherent(query: str, answer: str, metas: list = None) -> bool:
     return any(a in haystack for a in anchors)
 
 
+def _min_confidence() -> float:
+    """低置信阈值（策略键 answer.min_confidence，运行期可调即时生效）。"""
+    return float(strategies.get("answer.min_confidence", settings.min_confidence))
+
+
 def _extractive_answer(query: str, ctx) -> str:
-    """离线兜底：从检索片段中抽取与 query 最相关的句子，逐句带引用。"""
+    """离线兜底：从检索片段中抽取与 query 最相关的句子，逐句带引用。
+
+    防跑题（P2）：先按"主题锚词"挑相关块（含查询实体词的块优先），
+    再从相关块内抽句；若没有任何块含查询的主题锚词（即证据缺失），
+    返回空 → 上层拒答（宁拒不编造，防幻觉）。
+    """
     q_tokens = set(t for t in tokenize(query) if len(t) > 1 or t.isascii())
-    scored = []
+    anchors = {t for t in q_tokens if t not in _GENERIC_TOKENS}
+    min_conf = _min_confidence()
+    # 1) 按主题锚词挑相关块：含锚词的块计分更高（权重 1.0+重合度）；
+    #    查询无锚词时退回"高重合度"块。
+    scored_chunks = []
     for m in ctx.metas:
+        text = m.get("text", "")
+        s_tokens = set(tokenize(text))
+        if not s_tokens:
+            continue
+        overlap = len(q_tokens & s_tokens) / max(1, len(q_tokens))
+        if anchors:
+            if anchors & s_tokens:  # 块内含主题锚词 → 强相关
+                scored_chunks.append((1.0 + overlap, m))
+        else:
+            if overlap >= min_conf:
+                scored_chunks.append((overlap, m))
+    if not scored_chunks:
+        # 证据缺失（外库/跑题）→ 无相关块 → 拒答
+        return ""
+    scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    # 2) 从相关块内抽句：锚词块（锚词已命中，说明块级相关）放宽重合门槛；
+    #    非锚词块（退化高重合）仍需较高重合。
+    picked = []
+    seen = set()
+    for _, m in scored_chunks[:4]:
+        anchor_block = bool(anchors and (anchors & set(tokenize(m.get("text", "")))))
         for sent in _sentences_of(m.get("text", "")):
             s_tokens = set(tokenize(sent))
             if not s_tokens:
                 continue
             overlap = len(q_tokens & s_tokens) / max(1, len(q_tokens))
-            scored.append((overlap, m["idx"], sent))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    picked = []
-    seen = set()
-    for overlap, idx, sent in scored:
-        if overlap <= 0.05:
-            continue
-        key = sent[:24]
-        if key in seen:
-            continue
-        seen.add(key)
-        picked.append((idx, sent))
+            if overlap <= 0.05:
+                continue
+            if not anchor_block and overlap < min_conf:
+                continue
+            key = sent[:24]
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append((overlap, m["idx"], sent))
         if len(picked) >= 3:
             break
+    picked.sort(key=lambda x: x[0], reverse=True)
+    picked = picked[:3]
     if not picked:
-        # 无任何相关句 → 宁可拒答也不硬引无关片段（宁拒不编造）
         return ""
     lines = []
-    for idx, sent in picked:
+    for _overlap, idx, sent in picked:
         clean = sent.split("[")[0].strip().rstrip("。！？")
         if clean:
             lines.append(clean + "[" + str(idx) + "]。")
@@ -138,10 +181,21 @@ class AnswerGenerator:
         return self._redis or None
 
     def _cache_key(self, query: str, ctx) -> str:
+        # key 纳入 prompt 版本：模板改版后旧答案立即失效（策略/检索变化不敏感，
+        # 但 prompt 改版必须穿透缓存）
+        from ..ops.prompts import prompt_service
+
+        try:
+            version = int(prompt_service.get("qa", QA_SYSTEM)[0])
+        except Exception:  # noqa: BLE001 — 版本读取失败按 0 处理
+            version = 0
         ids = ",".join(str(m["chunk_id"]) for m in ctx.metas[:6])
         import hashlib
 
-        return hashlib.blake2b((query + "|" + ids).encode("utf-8"), digest_size=16).hexdigest()
+        return hashlib.blake2b(
+            (query + "|" + str(version) + "|" + ids).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
 
     def _semantic_lookup(self, query: str, ctx):
         """语义缓存：query 向量相似 + 证据块重叠 ≥50% → 复用精确缓存结果。
@@ -378,7 +432,13 @@ class AnswerGenerator:
                     usage = {"prompt_tokens": got_meta.prompt_tokens,
                              "completion_tokens": got_meta.completion_tokens,
                              "cost": round(got_meta.cost, 6)}
-            except (LLMUnavailable, quota_mod.QuotaExceeded) as e:
+            except ProviderError as e:
+                # 流式中途 ProviderError（含 LLMUnavailable，SSE 断流/上游故障）：
+                # 已流出 delta 无引用校验，丢弃并降级抽取式回答，避免半截答案入库
+                log_fields(logger, 30, "answer.stream_provider_error",
+                           error=str(e)[:120])
+                emitted.clear()
+            except quota_mod.QuotaExceeded as e:
                 log_fields(logger, 30, "answer.stream_degrade", error=str(e)[:120])
         raw = "".join(emitted)
         if not raw.strip():

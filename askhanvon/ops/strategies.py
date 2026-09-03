@@ -21,6 +21,7 @@ DEFAULTS = {
     "retrieval.sentence_filter": False,  # 句子级压缩（P1-4，实验开关）
     "answer.retry_on_refusal": True,     # 拒答后改写重检一次（P2-3）
     "answer.topic_coherence_check": True,  # 主题一致性守卫（防关键词碎片诱导）
+    # 低置信阈值作用于绝对分（rerank 词面分/向量余弦），黄金集标定见 config.min_confidence
     "answer.min_confidence": settings.min_confidence,
     "answer.llm_intro": False,           # 推荐结果是否用 LLM 生成导语（延迟换体验）
     "answer.semantic_cache": True,       # 语义缓存开关（P0-4）

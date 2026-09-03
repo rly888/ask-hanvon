@@ -34,6 +34,39 @@ def test_rate_limiter():
     assert results == [True, True, True, False, False]
 
 
+def test_login_failure_tracker_db_backed():
+    """登录失败锁定 DB 兜底：计数跨进程共享（多 worker 防爆破），成功清零。"""
+    from askhanvon.security.antifraud import _FailureTracker
+
+    t = _FailureTracker(db_fallback=True)
+    key = "login:test_user_dbt"
+    t.reset(key)
+    try:
+        for _ in range(5):
+            assert t.locked(key, 5, 900)[0] is False
+            t.record(key)
+        locked, retry = t.locked(key, 5, 900)
+        assert locked is True and retry > 0
+        t.reset(key)
+        assert t.locked(key, 5, 900)[0] is False
+    finally:
+        t.reset(key)
+
+
+def test_login_failure_tracker_inprocess():
+    """无 Redis/DB 时进程内兜底语义正确（单 worker 严格）。"""
+    from askhanvon.security.antifraud import _FailureTracker
+
+    t = _FailureTracker(db_fallback=False)
+    key = "login:test_user_mem"
+    t.reset(key)
+    for _ in range(3):
+        t.record(key)
+    assert t.locked(key, 3, 900)[0] is True
+    t.reset(key)
+    assert t.locked(key, 3, 900)[0] is False
+
+
 def test_purchase_risk_velocity(sample_book):
     # 未下单的用户应放行
     r = purchase_risk_check(987654)

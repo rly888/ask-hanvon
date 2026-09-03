@@ -179,6 +179,10 @@ class ModelGateway:
             self.embed_client = OpenAICompatClient(
                 settings.embed_base_url, settings.embed_api_key, settings.llm_timeout
             )
+        # 最近一次 embed() 的实际来源（api | local），供入库打标使用：
+        # 配置了 API 但调用失败时向量实际来自本地，chunk 必须按真实来源打标，
+        # 否则 API 恢复后新旧向量混算，P0-1 的模型变更重建防线会失效。
+        self.embed_last_source = "local"
 
     # ---------- LLM ----------
     def _chain(self, tier: str) -> list:
@@ -316,6 +320,13 @@ class ModelGateway:
             return settings.embed_model
         return "local-hash-embed-" + str(settings.embed_dim)
 
+    def effective_embed_model_name(self) -> str:
+        """按 embed() 最近一次真实来源返回标识：API 降级到本地时不虚报模型名。"""
+        if self.embed_client is not None and settings.embed_model \
+                and self.embed_last_source == "api":
+            return settings.embed_model
+        return "local-hash-embed-" + str(settings.embed_dim)
+
     # ---------- Embedding ----------
     def embed(self, texts: list, user_id=None) -> np.ndarray:
         """优先 API embedding；否则本地向量。返回 float32 [n, dim]。"""
@@ -333,15 +344,18 @@ class ModelGateway:
                 arr = np.array(vecs, dtype=np.float32)
                 norms = np.linalg.norm(arr, axis=1, keepdims=True)
                 arr = arr / np.maximum(norms, 1e-9)
+                self.embed_last_source = "api"
                 self._audit("embed", "openai-compat", settings.embed_model, "embed",
                             user_id, 0, int(sum(len(t) for t in texts) / 2), 0.0,
                             (time.perf_counter() - t0) * 1000, "ok")
                 return arr
             except ProviderError as e:
+                self.embed_last_source = "local"
                 self._audit("embed", "openai-compat", settings.embed_model, "embed",
                             user_id, 0, 0, 0.0, (time.perf_counter() - t0) * 1000,
                             "error", str(e)[:150])
                 log_fields(logger, 30, "embed.fallback_local", error=str(e)[:120])
+        self.embed_last_source = "local"
         arr = get_local_embedder(settings.embed_dim).embed(texts)
         self._audit("embed", "local", "local-hash-embed", "embed", user_id, 0,
                     int(sum(len(t) for t in texts) / 2), 0.0,

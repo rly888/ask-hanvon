@@ -216,6 +216,15 @@ def _detect_ext(filename: str) -> str:
 async def upload_book(file: UploadFile, user: dict = Depends(require_admin)):
     """上传样书：内存解析入库（不落盘），绕开任何用户输入相关的路径构造。"""
     ext = _detect_ext(file.filename)
+    # Content-Length 预检（无长度则分块读取时边读边限）——先于全量 read，
+    # 防止超大请求先占满内存再判大小（DoS 面）
+    cl = None
+    if file.headers:
+        raw = file.headers.get("content-length")
+        if raw and raw.isdigit():
+            cl = int(raw)
+    if cl is not None and cl > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大（>50MB）")
     data = await file.read()
     if len(data) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件过大（>50MB）")

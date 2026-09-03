@@ -147,11 +147,17 @@ def parse_markdown(text: str) -> ParsedBook:
 
 
 def parse_plain_text(text: str) -> ParsedBook:
-    """TXT：按「第X回/章/讲/篇」正则切章；空行分段；无匹配则按每 12 段切章。"""
+    """TXT：按「第X回/章/讲/篇」正则切章；空行分段；无匹配则按每 12 段切章。
+
+    修复：首章标题出现前的正文（序/楔子/书名页）不再被丢弃，保留为「开篇」章节；
+    无章节时兜底分章用收集到的正文行（且不含被消费的元信息行）。
+    """
     book = ParsedBook()
     lines = text.splitlines()
     meta_found = False
     cur: ParsedChapter | None = None
+    pending: list = []      # 首章标题前的正文，避免开头内容丢失
+    body_lines: list = []   # 全部正文行，供无章节兜底分章使用
     for raw in lines:
         line = raw.strip()
         if not meta_found and line and not cur:
@@ -168,13 +174,20 @@ def parse_plain_text(text: str) -> ParsedBook:
         if parsed and parsed[0] == "vol":
             continue
         if parsed and parsed[0] == "chapter":
+            if not book.chapters and pending:
+                book.chapters.append(ParsedChapter(no=0, title="开篇", paragraphs=pending))
+            pending = []
             cur = ParsedChapter(no=parsed[1], title=parsed[2] or ("第" + str(parsed[1]) + "章"))
             book.chapters.append(cur)
             continue
         if cur is not None and line:
             cur.paragraphs.append(line)
+            body_lines.append(line)
+        elif line:
+            pending.append(line)
+            body_lines.append(line)
     if not book.chapters:
-        body = [l.strip() for l in lines if l.strip()]
+        body = body_lines or [l.strip() for l in lines if l.strip()]
         for i in range(0, len(body), 12):
             book.chapters.append(
                 ParsedChapter(no=i // 12 + 1, title="节选" + str(i // 12 + 1),
@@ -197,8 +210,40 @@ def _html_to_text(html: str) -> str:
     return text
 
 
+def _epub_meta(root) -> dict:
+    """从 OPF 根节点读取 dc: 元数据（命名空间无关，取首个非空值）。"""
+    out = {"title": "", "creator": "", "subject": "", "description": ""}
+    for el in root.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        val = (el.text or "").strip()
+        if tag in out and val and not out[tag]:
+            out[tag] = val
+    return out
+
+
+def _epub_category(title: str) -> str:
+    """技术书无 dc:subject 时，按书名关键词归类（内容侧分类，供推荐冷启动）。"""
+    rules = [
+        (("算法", "数据结构", "趣学", "趣题", "计算", "程序设计", "编码"), "计算机基础"),
+        (("操作系统", "内核", "虚拟化", "真象还原"), "操作系统"),
+        (("网络", "分布式", "微服务", "缓存", "Zookeeper", "一致性", "SDN", "DPDK", "Paxos"),
+         "分布式与网络"),
+        (("安全", "加密", "赛博", "CPK"), "信息安全"),
+        (("机器学习", "自然语言", "NLP", "TensorFlow", "数据挖掘", "文本", "软计算"), "人工智能与数据"),
+        (("架构", "系统架构", "设计", "面向对象"), "软件架构"),
+        (("硬件", "电路", "芯片", "SoC", "嵌入式", "龙芯"), "硬件与嵌入式"),
+        (("图形", "图像", "OpenLayers", "WebGIS", "图形学", "数字图像"), "图形与多媒体"),
+        (("Surface", "玩全", "SharePoint", "Office"), "办公与工具"),
+    ]
+    for kws, cat in rules:
+        for kw in kws:
+            if kw in title:
+                return cat
+    return "技术图书"
+
+
 def parse_epub(path_or_file) -> ParsedBook:
-    """EPUB：按 spine 顺序抽取文本后走 TXT 章节识别（支持路径或 file-like）。"""
+    """EPUB：按 spine 顺序抽取文本后走 TXT 章节识别，并用 OPF 元数据覆盖书名/作者/分类。"""
     with zipfile.ZipFile(path_or_file) as zf:
         container = _safe_xml(zf.read("META-INF/container.xml").decode("utf-8", "ignore"))
         opf_path = ""
@@ -208,10 +253,12 @@ def parse_epub(path_or_file) -> ParsedBook:
         if rootfile is not None:
             opf_path = rootfile.get("full-path", "")
         texts = []
+        meta = {}
         if opf_path:
             opf = _safe_xml(zf.read(opf_path).decode("utf-8", "ignore"))
             base = opf_path.rsplit("/", 1)[0] + "/" if "/" in opf_path else ""
             oroot = ElementTree.fromstring(opf)
+            meta = _epub_meta(oroot)
             items = {}
             for item in oroot.iter():
                 tag = item.tag.rsplit("}", 1)[-1]
@@ -234,7 +281,20 @@ def parse_epub(path_or_file) -> ParsedBook:
                     texts.append(
                         _html_to_text(zf.read(name).decode("utf-8", "ignore"))
                     )
-    return parse_plain_text("\n".join(texts))
+    book = parse_plain_text("\n".join(texts))
+    # 覆盖 EPub 元数据（parse_plain_text 无法读到 OPF 里的标识信息）
+    if meta.get("title"):
+        book.title = meta["title"]
+    if meta.get("creator"):
+        book.author = meta["creator"]
+    if meta.get("subject"):
+        book.category = meta["subject"]
+    elif not book.category and meta.get("title"):
+        # 技术书常缺 dc:subject → 按标题归类，避免推荐冷启动无分类可依
+        book.category = _epub_category(meta["title"])
+    if meta.get("description") and not book.description:
+        book.description = meta["description"]
+    return book
 
 
 def parse_pdf(path_or_file) -> ParsedBook:

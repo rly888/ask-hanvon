@@ -199,10 +199,26 @@ def test_embedding_model_recorded_and_rebuild_on_change(sample_book):
     book = db.get_book(sample_book)
     current = get_gateway().embed_model_name()
     assert (book["embedding_model"] or "") == current
-    # 模拟换模型 → ingest 强制重建
+    # 模拟换模型 → ingest 强制重建：embed 桩直接产出向量并标记来源为 api，
+    # 与"已接入 API 向量"的假设一致；否则 effective 打标会按真实（本地）来源修正
+    import numpy as np
+
+    from askhanvon.config import settings as cfg
+
     gw = get_gateway()
     original = gw.embed_model_name
+    original_embed = gw.embed
+    original_client = gw.embed_client
+    original_model = cfg.embed_model
     gw.embed_model_name = lambda: "fake-embed-v2"
+    gw.embed_client = object()  # 模拟已配置 API 客户端
+    cfg.embed_model = "fake-embed-v2"
+
+    def _fake_embed(texts, user_id=None):
+        gw.embed_last_source = "api"
+        return np.zeros((len(texts), cfg.embed_dim), dtype=np.float32)
+
+    gw.embed = _fake_embed
     try:
         report = index_build.ingest_book(_sanguo_path())
         assert report["chunks"] > 0
@@ -210,6 +226,9 @@ def test_embedding_model_recorded_and_rebuild_on_change(sample_book):
         assert book2["embedding_model"] == "fake-embed-v2"
     finally:
         gw.embed_model_name = original
+        gw.embed = original_embed
+        gw.embed_client = original_client
+        cfg.embed_model = original_model
     # 还原真实模型并重建，避免污染其他用例
     index_build.ingest_book(_sanguo_path())
     from askhanvon.rag.retriever import get_retriever

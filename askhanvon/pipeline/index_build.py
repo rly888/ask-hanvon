@@ -46,6 +46,13 @@ def _ingest_parsed(parsed, source_name: str, reindex: bool) -> dict:
             reindex = True
         if reindex:
             db.delete_chunks(book_id)
+        else:
+            # 非 reindex：章节已重建（新 id），旧 chunk 全部成为孤儿，
+            # 清理后 FTS/向量矩阵不留脏块（数据一致性，P 优化）
+            orphaned = db.delete_orphan_chunks(book_id)
+            if orphaned:
+                log_fields(logger, 30, "ingest.orphan_cleanup",
+                           book=parsed.title, removed=orphaned)
     n_new_chunks = 0
     new_chunk_rows: list = []
     from .chunk import chunk_chapters  # 局部导入避免环
@@ -80,7 +87,13 @@ def _ingest_parsed(parsed, source_name: str, reindex: bool) -> dict:
             "embedding_model": embed_model,
         }
     )
-    embedded = embed_chunks(new_chunk_rows)
+    embedded, eff_model = embed_chunks(new_chunk_rows)
+    if eff_model != embed_model:
+        # API 配置了但实际降级到本地向量：块级/书级模型标识按真实来源修正，
+        # 下次 API 恢复时 embed_model_name() 变化会触发强制重建（P0-1 防线）。
+        db.set_chunks_embedding_model(book_id, eff_model)
+        db.set_book_embedding_model(book_id, eff_model)
+        embed_model = eff_model
     log_fields(
         logger, 20, "ingest.done", book=parsed.title, chapters=len(parsed.chapters),
         chunks=n_new_chunks, embedded=embedded,

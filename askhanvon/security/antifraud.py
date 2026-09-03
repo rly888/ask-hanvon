@@ -107,14 +107,43 @@ def rate_limit(kind: str, key: str, limit: int, window_s: float = 60.0) -> tuple
 
 
 class _FailureTracker:
-    """登录失败锁定（P0-6）：同 key 窗口内失败 ≥ limit 次则锁定。只记失败，成功清零。"""
+    """登录失败锁定（P0-6，多 worker 加固）：
 
-    def __init__(self):
+    1. Redis ZSET（多 worker 原子共享）—— 正常路径；
+    2. DB 计数（rate_counter 表，窗口桶）—— Redis 故障兜底，跨 worker 严格；
+    3. 进程内 deque —— DB 也故障时的最后防线。
+    只记失败，成功清零。三级均失效时退化为进程内（单进程语义正确）。
+    """
+
+    def __init__(self, db_fallback: bool | None = None):
         self._hits: dict = {}
         self._lock = threading.Lock()
+        self._redis = None
+        self._db_ticks = 0
+        if db_fallback is None:
+            db_fallback = (settings.db_engine == "postgres")
+        self._db_enabled = db_fallback
+
+    def _client(self):
+        if self._redis is None and settings.redis_url:
+            import redis as _redis
+
+            self._redis = _redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        return self._redis
 
     def locked(self, key: str, limit: int, window_s: float) -> tuple:
         now = time.time()
+        redis = self._client()
+        if redis is not None:
+            try:
+                return self._locked_redis(redis, key, limit, window_s, now)
+            except Exception:  # noqa: BLE001 — Redis 故障 → 降级 DB
+                self._redis = None
+        db_result = None
+        if self._db_enabled:
+            db_result = self._locked_db(key, limit, window_s, now)
+        if db_result is not None:
+            return db_result
         with self._lock:
             q = self._hits.get(key)
             if not q:
@@ -125,12 +154,72 @@ class _FailureTracker:
                 return True, int(q[0] + window_s - now) + 1
             return False, 0
 
-    def record(self, key: str) -> None:
+    def _locked_redis(self, redis, key: str, limit: int, window_s: float, now) -> tuple:
+        rkey = "loginfail:" + str(key)
+        redis.zremrangebyscore(rkey, 0, now - window_s)
+        count = int(redis.zcard(rkey))
+        if count < limit:
+            return False, 0
+        oldest = redis.zrange(rkey, 0, 0, withscores=True)
+        retry = int(oldest[0][1] + window_s - now) + 1 if oldest else 1
+        return True, retry
+
+    def _locked_db(self, key: str, limit: int, window_s: float, now):
+        """DB 计数兜底：窗口桶 = 锁定窗口，桶内计数 ≥ limit 即锁。"""
+        try:
+            from ..db import get_db
+
+            window_id = str(int(now // window_s))
+            n = get_db().rate_count("lf:" + str(key), window_id)
+            if n >= limit:
+                return True, int(window_s - (now % window_s)) + 1
+            return False, 0
+        except Exception:  # noqa: BLE001 — DB 故障 → 返回 None 走进程内
+            return None
+
+    def record(self, key: str, window_s: float = 900.0) -> None:
         now = time.time()
+        redis = self._client()
+        if redis is not None:
+            try:
+                rkey = "loginfail:" + str(key)
+                redis.zadd(rkey, {str(now): now})
+                redis.expire(rkey, int(window_s) + 60)
+                return
+            except Exception:  # noqa: BLE001 — Redis 故障 → 降级 DB
+                self._redis = None
+        if self._db_enabled:
+            try:
+                from ..db import get_db
+
+                window_id = str(int(now // window_s))
+                get_db().rate_bump("lf:" + str(key), window_id, 100000)
+                self._db_ticks += 1
+                if self._db_ticks % 200 == 0:
+                    try:
+                        get_db().rate_purge(str(int((now - 7200) // window_s)))
+                    except Exception:  # noqa: BLE001
+                        pass
+                return
+            except Exception:  # noqa: BLE001 — DB 故障 → 进程内
+                pass
         with self._lock:
             self._hits.setdefault(key, deque()).append(now)
 
     def reset(self, key: str) -> None:
+        redis = self._client()
+        if redis is not None:
+            try:
+                redis.delete("loginfail:" + str(key))
+            except Exception:  # noqa: BLE001 — Redis 故障 → 降级 DB
+                self._redis = None
+        if self._db_enabled:
+            try:
+                from ..db import get_db
+
+                get_db().rate_reset("lf:" + str(key))
+            except Exception:  # noqa: BLE001
+                pass
         with self._lock:
             self._hits.pop(key, None)
 

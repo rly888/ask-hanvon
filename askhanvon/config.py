@@ -94,7 +94,9 @@ class Settings:
     retrieval_top_k: int = _int("RETRIEVAL_TOP_K", 40)
     rerank_top_n: int = _int("RERANK_TOP_N", 6)
     context_char_budget: int = _int("CONTEXT_CHAR_BUDGET", 3600)
-    min_confidence: float = _float("MIN_CONFIDENCE", 0.28)
+    # 低置信阈值作用于绝对分（rerank 词面分/向量余弦，非 minmax 归一分）：
+    # 黄金集标定 —— 可答题最低 rerank≈0.14，纯垃圾检索≈0~0.117，取 0.12 分隔。
+    min_confidence: float = _float("MIN_CONFIDENCE", 0.12)
 
     # ---- 生成 ----
     copyright_max_quote_chars: int = _int("COPYRIGHT_MAX_QUOTE_CHARS", 300)

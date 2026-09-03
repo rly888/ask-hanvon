@@ -40,6 +40,19 @@ def _dedup(items: list, per_book_cap: int = 3) -> tuple:
     return kept, dropped
 
 
+def _absolute_confidence(safe: list) -> float:
+    """绝对置信度：保留块中最好源的最好分（绝对刻度，非 minmax 归一值）。
+
+    检索融合后的 score 经 minmax 归一，第一名恒为 1.0，不能充当置信度。
+    置信度源优先级：rerank 词面分 → 向量余弦 → 融合分（后者仅作兜底）。
+    """
+    for source in ("rerank_score", "vector_score", "score"):
+        vals = [float(r[source]) for r in safe if r.get(source) is not None]
+        if vals:
+            return max(vals)
+    return 0.0
+
+
 def _expand_chunk(item: dict, excluded_ids: set) -> str:
     """父块扩展：并入同章相邻块文本（跳过已入选块），单侧长度受限（P1-1）。"""
     if not strategies.get("retrieval.parent_expand", True):
@@ -117,8 +130,9 @@ def build_context(query: str, retrieved: list, budget: int | None = None,
         )
         used += len(block)
 
-    top_score = safe[0].get("score", 0.0) if safe else 0.0
-    low = (not metas) or top_score < settings.min_confidence
+    top_score = _absolute_confidence(safe)
+    min_conf = float(strategies.get("answer.min_confidence", settings.min_confidence))
+    low = (not metas) or top_score < min_conf
     return ContextResult(
         blocks="\n\n".join(lines),
         metas=metas,

@@ -67,3 +67,27 @@ def test_ingest_and_index(sample_book):
     assert book and book["n_chunks"] > 0
     rows = db.get_chunks_of_book(sample_book)
     assert all(r["embedding"] for r in rows), "embedding 应已生成"
+
+
+def test_reingest_without_reindex_leaves_no_orphans(sample_book):
+    """重入库（reindex=False）后章节全部重建，旧 chunk 必须清理，不留孤儿块。"""
+    import os
+
+    from askhanvon.db import get_db
+    from askhanvon.pipeline.index_build import ingest_book
+
+    db = get_db()
+    book = db.get_book(sample_book)
+    source = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "books", book["source_file"],
+    )
+    before = len(db.get_chunks_of_book(sample_book))
+    report = ingest_book(source, reindex=False)
+    after = len(db.get_chunks_of_book(sample_book))
+    assert report["chunks"] == after, "落库块数应与本次 ingest 产出一致"
+    assert after <= before, "重入库不应累积旧块"
+    # 无孤儿：每个 chunk 的 chapter_id 都在当前章节表中
+    valid_ids = {c["id"] for c in db.chapters_of_book(sample_book)}
+    for r in db.get_chunks_of_book(sample_book):
+        assert r["chapter_id"] in valid_ids, "存在指向已删除章节的孤儿 chunk"

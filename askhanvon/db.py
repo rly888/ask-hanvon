@@ -354,10 +354,45 @@ CREATE TABLE IF NOT EXISTS injection_hits(
             self._conn().execute("DELETE FROM chunks WHERE book_id=?", (book_id,))
             self._conn().commit()
 
+    def delete_orphan_chunks(self, book_id: str) -> int:
+        """删除章节已不存在的孤儿 chunk（重入库未 reindex 时清理旧块），返回删除数。"""
+        with self._write_lock:
+            rows = self._conn().execute(
+                "SELECT id FROM chunks WHERE book_id=? AND chapter_id NOT IN"
+                " (SELECT id FROM chapters WHERE book_id=?)",
+                (book_id, book_id),
+            ).fetchall()
+            for r in rows:
+                self._conn().execute("DELETE FROM chunks_fts WHERE rowid=?", (r["id"],))
+            if rows:
+                self._conn().execute(
+                    "DELETE FROM chunks WHERE book_id=? AND chapter_id NOT IN"
+                    " (SELECT id FROM chapters WHERE book_id=?)",
+                    (book_id, book_id),
+                )
+                self._conn().commit()
+            return len(rows)
+
     def update_chunk_embedding(self, chunk_id: int, blob: bytes) -> None:
         with self._write_lock:
             self._conn().execute(
                 "UPDATE chunks SET embedding=? WHERE id=?", (blob, chunk_id)
+            )
+            self._conn().commit()
+
+    def set_chunks_embedding_model(self, book_id: str, name: str) -> None:
+        """入库打标修正：embed 实际来源与声明模型不一致时统一改写块级模型标识。"""
+        with self._write_lock:
+            self._conn().execute(
+                "UPDATE chunks SET embedding_model=? WHERE book_id=?",
+                (name, book_id),
+            )
+            self._conn().commit()
+
+    def set_book_embedding_model(self, book_id: str, name: str) -> None:
+        with self._write_lock:
+            self._conn().execute(
+                "UPDATE books SET embedding_model=? WHERE id=?", (name, book_id)
             )
             self._conn().commit()
 
@@ -640,6 +675,19 @@ CREATE TABLE IF NOT EXISTS injection_hits(
             self._conn().execute(
                 "DELETE FROM rate_counter WHERE window_id < ?", (older_window_id,)
             )
+            self._conn().commit()
+
+    def rate_count(self, key: str, window_id: str) -> int:
+        """读取窗口计数（登录失败锁定等需要精确计数的场景）。"""
+        rows = self._read(
+            "SELECT n FROM rate_counter WHERE key=? AND window_id=?", (key, window_id)
+        )
+        return int(rows[0]["n"]) if rows else 0
+
+    def rate_reset(self, key: str) -> None:
+        """清零某 key 的全部窗口计数（登录成功时调用）。"""
+        with self._write_lock:
+            self._conn().execute("DELETE FROM rate_counter WHERE key=?", (key,))
             self._conn().commit()
 
     # ---------- 订单域 ----------

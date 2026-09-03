@@ -518,9 +518,30 @@ class PgRepository:
         with self._tx() as c:
             c.execute("DELETE FROM chunks WHERE book_id=%s", (book_id,))
 
+    def delete_orphan_chunks(self, book_id) -> int:
+        """删除章节已不存在的孤儿 chunk（重入库未 reindex 时清理旧块），返回删除数。"""
+        with self._tx() as c:
+            cur = c.execute(
+                "DELETE FROM chunks WHERE book_id=%s AND chapter_id NOT IN"
+                " (SELECT id FROM chapters WHERE book_id=%s) RETURNING id",
+                (book_id, book_id),
+            )
+            return len(cur.fetchall())
+
     def update_chunk_embedding(self, chunk_id, blob) -> None:
         with self._tx() as c:
             c.execute("UPDATE chunks SET embedding=%s WHERE id=%s", (blob, chunk_id))
+
+    def set_chunks_embedding_model(self, book_id, name) -> None:
+        """入库打标修正：embed 实际来源与声明模型不一致时统一改写块级模型标识。"""
+        with self._tx() as c:
+            c.execute("UPDATE chunks SET embedding_model=%s WHERE book_id=%s",
+                      (name, book_id))
+
+    def set_book_embedding_model(self, book_id, name) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE books SET embedding_model=%s WHERE id=%s",
+                      (name, book_id))
 
     def set_fts(self, chunk_id, tokens) -> None:
         """tsv 为生成的 STORED 列：写 tokens 即自动维护全文索引。"""
@@ -598,6 +619,17 @@ class PgRepository:
             c.execute(
                 "DELETE FROM rate_counter WHERE window_id < %s", (older_window_id,)
             )
+
+    def rate_count(self, key: str, window_id: str) -> int:
+        with self._tx() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT n FROM rate_counter WHERE key=%s AND window_id=%s",
+                (key, window_id)).fetchall()]
+        return int(rows[0]["n"]) if rows else 0
+
+    def rate_reset(self, key: str) -> None:
+        with self._tx() as c:
+            c.execute("DELETE FROM rate_counter WHERE key=%s", (key,))
 
     # ---------- 订单域 ----------
     def create_order(self, order_id, user_id, book_id, qty, price, confirm_token,
@@ -1083,10 +1115,12 @@ PG_DOMAIN_METHODS = {
     "kv_get", "kv_set",
     "upsert_book", "get_book", "get_book_by_title", "all_books", "list_books",
     "delete_book", "add_chapter", "delete_chapters", "chapters_of_book",
-    "add_chunk", "delete_chunks", "update_chunk_embedding", "set_fts", "delete_fts",
+    "add_chunk", "delete_chunks", "delete_orphan_chunks",
+    "update_chunk_embedding", "set_fts", "delete_fts",
+    "set_chunks_embedding_model", "set_book_embedding_model",
     "fts_search", "get_chunk", "get_chunks_all", "get_chunks_of_book",
     "get_chunks_by_book_chapter", "count_chunks", "content_hash_exists",
-    "rate_bump", "rate_purge",
+    "rate_bump", "rate_purge", "rate_count", "rate_reset",
     "create_user", "get_user_by_username", "get_user", "list_users",
     "get_profile", "upsert_profile",
     "create_session", "touch_session", "get_session", "list_sessions",

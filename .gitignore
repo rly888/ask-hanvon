@@ -1,11 +1,15 @@
 # 运行时数据（数据库/日志/上传/凭据产物）不入库
 data/
 data-pg-demo/
+epub/
+novels/
+txt/
 __pycache__/
 *.pyc
 .pytest_cache/
 .playwright-mcp/
 *.log
+task*_log.txt
 locust_*.csv
 
 # 本机安全扫描工具状态（扫描历史/报告）不入库
